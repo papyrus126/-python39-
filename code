@@ -1,0 +1,440 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Sat Dec 19 14:07:03 2020
+
+@author: Ching-Chuan Tsong
+"""
+
+#110/12/24, 111/01/12, 111/02/12, 111/08/30, 111/12/13
+#111/12/17(for mypython39 OK!), 112/02/08
+
+
+
+"""
+############################
+111/12/17
+pandas_datareader失靈, 改用yfinance
+pip install yfinance==0.1.70. 注意: 不要安裝最新版!
+
+Kmeans原理參考:
+    https://www.cnblogs.com/pinard/p/6164214.html
+############################
+"""
+
+"""
+#################################
+# 此code copy from PFF 15-3 OLS 最後block, 加上Yahoo抓股票data
+# 109/12/19
+#===============================
+# ***為了完整性, 重新寫一次***
+# 寫成函數(結構化程式)
+# 再加入KMeans. 亦即: regression(y=return), regression(y=漲, 平盤, 跌), KMeans
+# 考慮overfitting問題
+################################
+"""
+
+##########################
+#import os
+#os.environ["OMP_NUM_THREADS"] = '1'
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from pylab import mpl
+import seaborn as sns
+from datetime import datetime  # 處理日期套件
+#import pandas_datareader.data as web #抓取yahoo股價的套件
+import yfinance as yf #抓股票資料 pip install yfinance==0.1.70. 注意: 不要安裝最新版!
+
+from sklearn.linear_model import LinearRegression 
+from sklearn.model_selection import train_test_split
+
+#KMeans: unsupervised learning
+from sklearn.cluster import KMeans
+
+import warnings #忽略warnings  111/12/11 for python 3.9
+#=======================================#
+
+sns.set() #seaborn預設的組合風格
+#plt.style.use('seaborn')
+mpl.rcParams['font.family'] = 'serif'
+
+#設定np列印格式. suppress=True:取消科學記數法
+#對浮點數做設定
+np.set_printoptions(suppress=True,
+                    formatter={'float': lambda x: f'{x:6.3f}'}
+                    ) 
+
+# df設定列印格式
+#pd.set_option('display.precision', 2)
+
+#显示小数位数
+pd.set_option('display.float_format', lambda x: f'{x:6.3f}')
+
+warnings.filterwarnings("ignore") #忽略warnings  111/12/11 (KMeans有warning)
+###########################
+
+
+#===========================================#
+def create_lags(data): #建立return lags, 當作features
+    global cols #global variable
+    cols = [] #feature 名稱
+    for kk in range(1, lag+1):
+        col = f"lag_{kk}"
+        data[col] = data['returns'].shift(kk)
+        cols.append(col)
+#============================================#
+
+# ***估計模型***
+#====================================
+def fit_models(data): #將這兩種方法估計後放入mfit字典. models[model]:以鍵取值. 傳入的data為train set
+    mfit = {"ls_real": models['ls_real'].fit(data[cols], data['returns']),
+            "ls_dummy": models['ls_dummy'].fit(data[cols], data['direction']),
+            "KMeans": models['KMeans'].fit(data[cols]), #KMeans 沒有label (非監督學習)                                   
+            }
+    
+    return mfit
+#====================================
+#*********************
+
+
+#*********************
+#==================================#
+#計算這兩種方法的部位 (預測)
+# ***預測***
+def derive_positions(data): #data是傳入test
+    for model in mfit.keys():
+        #若model為regression, 預測值(實數),非0,1
+        #若model為KMeans, 預測值為0,1
+        
+        #mfit[model]:字典, 以鍵取值(估計後model)
+        #回歸預測值(實數), KMeans: 0, 1
+        data['pos_'+model] = mfit[model].predict(data[cols])
+        
+        if model == "KMeans":
+            #第1類, 放空(-1), 第0類, 買進(1) 
+            data['pos_'+model] = np.where(data['pos_'+model] == 1, -1, 1)
+        else:
+          #####################################   
+            # 這裡和PFF 15-6不同, 修改一下!
+            #預測return, 預測值>0 1(買進), 否則放空
+            data['pos_'+model] = np.where(data['pos_'+model] > 0, 1, -1) 
+          #####################################
+#==================================#
+
+#*********************
+#=====================================#
+#計算這些策略return
+def evaluate_strats(data): #data是傳入test df
+    global sel
+    sel = []
+    for model in mfit.keys():
+        col = 'strat_'+model #策略column名稱
+        data[col] = data['pos_'+model] * data['returns']
+        sel.append(col) #將這些策略column名稱收集起來
+        
+    sel.insert(0, 'returns')     
+#==========================================#
+#**************************
+
+#*************
+#===================================#
+def plot_func(): #畫累積return
+    test[sel].cumsum().apply(np.exp).plot(figsize=(10, 6))
+    plt.title(f"{stock_id}", fontsize=24)
+    plt.tick_params(axis='both', labelsize=12)
+    plt.xlabel('Date', fontsize=14)
+    
+    plt.show() 
+#===================================#
+#*************
+
+"""
+#################
+#  ***主程式***
+#################
+"""
+
+#讀取資料
+#台積: 2330.TW. 鴻海: 2317.TW 國泰金: 2882.TW
+stock_id = '2317.TW'
+start = datetime(2016, 1, 1)
+end = datetime(2023, 2, 1)   #之前的區間2021-10-28; datetime(2022, 12, 20)
+
+###########################
+#web.DataReader(): 111/12/17有問題!
+#df_2330 = web.DataReader(stock_id, 'yahoo', start, end) #0050, df
+
+#111/12/17 OK!
+df_2330 = yf.download(stock_id,
+                      start=start,
+                      end=end,
+                      progress=False) #progress=False:省略當前進度
+##########################
+
+df_2330.head(5)
+
+df_2330.info()
+df_2330.columns
+df_2330.isnull().any() #沒有NaN
+
+data = pd.DataFrame(df_2330['Close']) #取收盤價
+data.head()
+
+data['returns'] = np.log(data / data.shift(1))
+data.head()
+data.dropna(inplace=True)
+data.head()
+
+#-1, 0, 1. np.sign():float
+data['direction'] = np.sign(data['returns']).astype(int)
+data.head()
+
+data['direction'].value_counts()
+
+#練習畫直方圖
+data['direction'].value_counts().sort_index()\
+    .plot(kind="bar", figsize=(10, 6), edgecolor="k", lw=1.5, rot=0)
+                                      
+plt.show()
+#========================================#
+#================================#
+
+#用return lag預測return or 漲跌
+############
+lag = 2
+############
+
+models = {'ls_real': LinearRegression(),
+          'ls_dummy': LinearRegression(),
+          'KMeans': KMeans(n_clusters=2, random_state=0), #分成兩群
+          }
+
+data.info()
+
+create_lags(data) #lags (features)
+cols
+data.columns
+data.head()
+data.dropna(inplace=True)
+data.round(3).head()
+
+#將整個data (df) 一起分割 (random分割成train, test set)
+train, test = train_test_split(data, test_size=0.5,
+                               random_state=100, shuffle=False,
+                               )
+
+#shuffle=False, 其實也不用sort_index()
+train = train.copy().sort_index()
+test = test.copy().sort_index()
+train
+test
+
+mfit = fit_models(train) #用train進行訓練
+mfit
+
+derive_positions(test)    #估完之後, 用test set找position與評估績效
+
+test.columns
+test.head()
+
+evaluate_strats(test) #用test set
+
+test.columns
+test.head()
+
+sel
+
+#test set期末return
+test[sel].sum().apply(np.exp)
+
+plot_func()
+#===============================================#
+
+"""
+==========================
+#找出最佳策略, 要分析最大回撤, VaR 111/02/25. 參考PAT 4-2 or 10-2
+#也可以將以下code寫成函數(自行練習)
+==========================
+"""
+
+#找出最佳策略
+opt_strat = test[sel].sum().apply(np.exp).sort_values(ascending=False).index[0]
+opt_strat #'strat_ls_real'
+
+#該"累積return"軌跡
+risk = test[[opt_strat]].cumsum().apply(np.exp)
+risk
+risk["cummax"] = risk[opt_strat].cummax() #截至該時點累積return最大值
+risk["drawdown"] = risk["cummax"] - risk[opt_strat]
+risk
+
+max_drawdown = risk["drawdown"].max() #最大回撤
+max_drawdown
+t_max = risk["drawdown"].idxmax() #最大回撤時點
+t_max
+str(t_max)[:10] #將DateTimeIndex轉成字串再取出年月日
+
+#畫圖
+risk[[opt_strat, "cummax"]].plot(figsize=(10, 6))
+plt.axvline(x=t_max, lw=2, c="m", ls="--")
+plt.title(stock_id, fontsize=24)
+
+#陽春箭頭設定
+arror_props1 = dict(color='red', arrowstyle='->', 
+                    lw=2, alpha=0.8)
+
+#註釋text, 註釋座標, 
+#xytext=(-100, 20): 文字相對於被註釋點xy, 左偏移100點, 上偏移20點.
+#textcoords='offset points': 控制文字相對於被註釋點xy的偏移量（單位是點）
+plt.annotate(str(t_max)[:10], xy=(str(t_max)[:10], 1), xycoords='data',
+             xytext=(-100, 20), textcoords='offset points', fontsize=12,
+             arrowprops=arror_props1)
+plt.show()
+#=======================#
+
+"""
+===========================
+#return達到最大值的那些drawdown, 其值為0
+#目的要找出最大回撤時間間格
+===========================
+"""
+
+risk[["drawdown"]]
+temp = risk[["drawdown"]].query('drawdown==0')
+temp
+
+#時間間隔
+(temp.index[1:] - temp.index[:-1])
+
+
+#加入最後一筆數據的date, 可以計算最後一個回撤的時間間格
+last_df = pd.DataFrame({"drawdown": 0}, index=[risk.index[-1]])
+#temp = temp.append(last_df)
+temp = pd.concat([temp, last_df])
+temp
+
+#回撤最大天數 maximum drawdown period
+max_down_period = (temp.index[1:] - temp.index[:-1]).max()
+max_down_period
+
+#========================================#
+#要找出最大回撤期間起始與終止日期. 方法一: 111/12/13
+down_period =  (temp.index[1:] - temp.index[:-1]) #類似差分
+len(down_period)
+down_period
+
+
+pd.TimedeltaIndex(["0 days"])
+
+#補上第一個entry為"0 days": 第一個回撤開始日期, 經過0 days. 
+#放入列表, 再與原來down_period合併
+[pd.TimedeltaIndex(["0 days"])[0]] + list(down_period)
+
+
+down_period_df = temp.copy() #主要是要擷取drawdown=0的日期
+down_period_df
+down_period_df["down_period"] = [pd.TimedeltaIndex(["0 days"])[0]] + list(down_period) #所有回撤的天數(period)
+down_period_df
+
+end_max_down = down_period_df["down_period"].idxmax() #最大回撤終止日期
+end_max_down
+
+#check!
+down_period_df.loc[end_max_down]
+
+#最大回撤開始日期的index (down_period_df.index < end_max_down所有index最大那一個)
+np.where(down_period_df.index < end_max_down)[0]
+start_index_max_down = np.where(down_period_df.index < end_max_down)[0].max()
+start_index_max_down
+
+#最大回撤開始日期
+down_period_df.iloc[[start_index_max_down]].index
+start_max_down = down_period_df.iloc[[start_index_max_down]].index[0]
+start_max_down
+
+longest_down_start = str(start_max_down)[:10]
+longest_down_start
+longest_down_end = str(end_max_down)[:10]
+longest_down_end
+#====================================================#
+"""
+#要找出最大回撤期間起始與終止日期. 方法二: 之前做法
+#先轉成整數後放入list中
+time_int = (temp.index[1:] - temp.index[:-1]).astype(int).tolist() #[18]
+time_int = np.array(time_int)
+time_int
+
+#(該值最大的index即是最長回撤期間的起始index)
+time_int.argmax() #index=18時是最大回撤天數的起始時點
+temp.index[18] #起始日期
+temp.index[19] #終止日期
+
+#check 正確性
+temp.index[19] - temp.index[18]
+#兩者相同
+max_down_period
+
+longest_down_start = str(temp.index[time_int.argmax()])[:10]
+longest_down_start
+longest_down_end = str(temp.index[time_int.argmax()+1])[:10]
+longest_down_end
+#=============================================#
+"""
+
+print()
+print(20*"=")
+print(f"maximum drawdown = {max_drawdown:6.3f}")
+print(f"maximum drawdown date = {str(t_max)[:10]}")
+#先將days轉成str, 再取前8個chr
+print(f"maximum drawdown period = {str(max_down_period)[:8]}")
+print(f"from {longest_down_start} to {longest_down_end}")
+print(20*"=")
+#================================================#
+
+#畫圖(將上圖畫出最長drawdown區間) 111/04/06
+risk[[opt_strat, "cummax"]].plot(figsize=(10, 6))
+plt.axvline(x=t_max, lw=2, c="m", ls="--")
+plt.title(stock_id, fontsize=24)
+
+#陽春箭頭設定
+arror_props1 = dict(color='red', arrowstyle='->', 
+                            lw=2, alpha=0.8)
+
+#註釋text, 註釋座標, 
+#xytext=(-100, 20): 文字相對於被註釋點xy, 右偏移100點, 上偏移20點.
+#textcoords='offset points': 控制文字相對於被註釋點xy的偏移量（單位是點）
+plt.annotate(str(t_max)[:10], xy=(str(t_max)[:10], 1), xycoords='data',
+             xytext=(-100, 20), textcoords='offset points', fontsize=12,
+             arrowprops=arror_props1)
+
+##############
+Ix = pd.date_range(start=longest_down_start, end=longest_down_end)
+Ix
+
+y1 = risk[opt_strat].min()-0.01
+y2 = risk[opt_strat].max()+0.01
+
+plt.fill_between(Ix, y1=y1, y2=y2, color='m', alpha=0.2)
+plt.ylim([y1, y2])
+##############
+
+plt.show()
+#=======================#
+
+#計算VaR
+percs = [0.5, 1, 2.5, 5, 10] #percentiles (表示最多有0.5%的機率會賠超過VaR的值)
+
+#Note: test[opt_strat]是採取"opt_strat"的每日return(不是累積return)
+VaR = np.percentile(test[opt_strat], percs)
+VaR
+
+print()
+print(20*"=")
+print("probability   VaR")
+print(20*"=")
+for (perc, var) in zip(percs, VaR):
+    print(f"{perc:5.1f}%  {var:10.3f}")
+
+print(20*"=")
+#=========================================#
